@@ -99,7 +99,6 @@
       <groupId>com.google.protobuf</groupId>
       <artifactId>protobuf-java</artifactId>
       <version>${protobuf.version}</version>
-      <version>${protobuf.version}</version>
     </dependency>
 
     <!-- Necesaria porque el código gRPC generado referencia javax.annotation.Generated -->
