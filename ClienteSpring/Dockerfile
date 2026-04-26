@@ -2,6 +2,8 @@ FROM maven:3.9-eclipse-temurin-17 AS build
 
 WORKDIR /app
 
+ARG CACHE_BUST=1
+
 COPY pom.xml .
 COPY ong.proto .
 RUN mvn dependency:go-offline -B
