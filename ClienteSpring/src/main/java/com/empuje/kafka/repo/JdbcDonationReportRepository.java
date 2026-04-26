@@ -1,0 +1,228 @@
+package com.empuje.repo;
+
+import com.empuje.kafka.dto.SolicitudDtos.DonationGroup;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Repository;
+
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+@Repository
+public class JdbcDonationReportRepository {
+
+    private final JdbcTemplate jdbcTemplate;
+
+    public JdbcDonationReportRepository(JdbcTemplate jdbcTemplate) {
+        this.jdbcTemplate = jdbcTemplate;
+    }
+
+    // =========================================================
+    // Agrupado de donaciones con filtros (AHORA half-open)
+    // incluye todo el día 'to'
+    // =========================================================
+    public List<DonationGroup> findGrouped(
+            String categoria,
+            LocalDate from,
+            LocalDate to,
+            String eliminado) {
+
+        // half-open: toExclusive = to + 1 día (00:00)
+        LocalDate toExclusive = (to == null) ? null : to.plusDays(1);
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT c.nombre AS categoria, " +
+                        "CASE WHEN d.eliminado = 1 THEN 'SI' ELSE 'NO' END AS eliminado, " +
+                        "COALESCE(SUM(d.cantidad), 0) AS total " +
+                        "FROM donaciones d " +
+                        "INNER JOIN categorias c ON d.categoria_id = c.id " +
+                        "WHERE 1=1 ");
+
+        List<Object> params = new ArrayList<>();
+
+        // --- Filtro por categoría ---
+        if (categoria != null && !categoria.isBlank()) {
+            sql.append(" AND c.nombre LIKE ? ");
+            params.add("%" + categoria + "%");
+        }
+
+        // Filtro por fechas half-open (sin DATE(...))
+        if (from != null) {
+            sql.append(" AND d.fecha_alta >= ? ");
+            params.add(from);
+        }
+        if (toExclusive != null) {
+            sql.append(" AND d.fecha_alta < ? ");
+            params.add(toExclusive);
+        }
+
+        // --- Filtro por eliminado ---
+        if (eliminado != null && !"AMBOS".equalsIgnoreCase(eliminado)) {
+            sql.append(" AND d.eliminado = ? ");
+            params.add("SI".equalsIgnoreCase(eliminado) ? 1 : 0);
+        }
+
+        sql.append(" GROUP BY c.nombre, d.eliminado ORDER BY c.nombre;");
+
+        System.out.println("[DEBUG SQL AGRUPADO] " + sql);
+        System.out.println("[DEBUG PARAMS AGRUPADO] " + params);
+
+        return jdbcTemplate.query(sql.toString(), params.toArray(), this::mapDonationGroup);
+    }
+
+    private DonationGroup mapDonationGroup(ResultSet rs, int rowNum) throws SQLException {
+        DonationGroup group = new DonationGroup();
+        group.setCategoria(rs.getString("categoria"));
+        group.setEliminado(rs.getString("eliminado"));
+
+        try {
+            group.setTotal(rs.getBigDecimal("total"));
+        } catch (Exception e) {
+            group.setTotal(java.math.BigDecimal.valueOf(rs.getDouble("total")));
+        }
+
+        return group;
+    }
+
+    // =========================================================
+    // Detalle individual con filtros (AHORA half-open)
+    // =========================================================
+    public List<Map<String, Object>> obtenerDonacionesIndividuales(
+            String categoria, String eliminado, LocalDate from, LocalDate to) {
+
+        // half-open: toExclusive = to + 1 día (00:00)
+        LocalDate toExclusive = (to == null) ? null : to.plusDays(1);
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT d.descripcion, d.cantidad, d.fecha_alta " +
+                        "FROM donaciones d " +
+                        "INNER JOIN categorias c ON d.categoria_id = c.id " +
+                        "WHERE 1=1 ");
+
+        List<Object> params = new ArrayList<>();
+
+        // --- Filtro categoría ---
+        if (categoria != null && !categoria.isBlank()) {
+            sql.append(" AND REPLACE(UPPER(c.nombre), '_', ' ') LIKE CONCAT('%', REPLACE(UPPER(?), '_', ' '), '%') ");
+            params.add(categoria);
+        }
+
+        // Filtros de fechas half-open (sin DATE(...))
+        if (from != null) {
+            sql.append(" AND d.fecha_alta >= ? ");
+            params.add(from);
+        }
+        if (toExclusive != null) {
+            sql.append(" AND d.fecha_alta < ? ");
+            params.add(toExclusive);
+        }
+
+        // --- Filtro eliminado ---
+        if (eliminado != null && !"AMBOS".equalsIgnoreCase(eliminado)) {
+            sql.append(" AND d.eliminado = ? ");
+            params.add("SI".equalsIgnoreCase(eliminado) ? 1 : 0);
+        }
+
+        sql.append(" ORDER BY d.fecha_alta DESC");
+
+        return jdbcTemplate.queryForList(sql.toString(), params.toArray());
+    }
+
+    // === MÉTODOS PARA EXCEL (Usando forma half-open) ===
+
+    /*
+     * Devuelve las categorías que tienen registros que coinciden con los filtros.
+     * Implementa ventana half-open para que incluya todo el día 'to'.
+     */
+    public List<String> findCategoriasFiltradas(String categoriaFiltro,
+            LocalDate from,
+            LocalDate to,
+            String eliminado) {
+
+        // half-open: toExclusive = to + 1 día (00:00)
+        LocalDate toExclusive = (to == null) ? null : to.plusDays(1);
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT DISTINCT c.nombre AS categoria " +
+                        "FROM donaciones d " +
+                        "INNER JOIN categorias c ON d.categoria_id = c.id " +
+                        "WHERE 1=1 ");
+
+        List<Object> params = new ArrayList<>();
+
+        if (categoriaFiltro != null && !categoriaFiltro.isBlank()) {
+            sql.append(" AND REPLACE(UPPER(c.nombre), '_', ' ') LIKE CONCAT('%', REPLACE(UPPER(?), '_', ' '), '%') ");
+            params.add(categoriaFiltro);
+        }
+
+        // Fechas half-open SIN DATE(...)
+        if (from != null) {
+            sql.append(" AND d.fecha_alta >= ? ");
+            params.add(from);
+        }
+        if (toExclusive != null) {
+            sql.append(" AND d.fecha_alta < ? ");
+            params.add(toExclusive);
+        }
+
+        if (eliminado != null && !"AMBOS".equalsIgnoreCase(eliminado)) {
+            sql.append(" AND d.eliminado = ? ");
+            params.add("SI".equalsIgnoreCase(eliminado) ? 1 : 0);
+        }
+
+        sql.append(" ORDER BY c.nombre ");
+
+        return jdbcTemplate.queryForList(sql.toString(), params.toArray(), String.class);
+    }
+
+    // =========================================================
+    // Detalles para exportar a Excel (half-open)
+    // =========================================================
+    public List<Map<String, Object>> findDetallesParaExcel(
+            String categoria, LocalDate from, LocalDate to, String eliminado) {
+
+        // half-open: toExclusive = to + 1 día (00:00)
+        LocalDate toExclusive = (to == null) ? null : to.plusDays(1);
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT d.fecha_alta, d.descripcion, d.cantidad, d.eliminado, " +
+                        "u.nombre AS usuario_alta " +
+                        "FROM donaciones d " +
+                        "INNER JOIN categorias c ON d.categoria_id = c.id " +
+                        "LEFT JOIN usuarios u ON d.usuario_alta = u.id " +
+                        "WHERE 1=1 ");
+
+        List<Object> params = new ArrayList<>();
+
+        // Filtro categoría (exacto por nombre)
+        if (categoria != null && !categoria.isBlank()) {
+            sql.append(" AND UPPER(c.nombre) = UPPER(?) ");
+            params.add(categoria);
+        }
+
+        // Fechas half-open SIN DATE(...)
+        if (from != null) {
+            sql.append(" AND d.fecha_alta >= ? ");
+            params.add(from);
+        }
+        if (toExclusive != null) {
+            sql.append(" AND d.fecha_alta < ? ");
+            params.add(toExclusive);
+        }
+
+        // Filtro eliminado
+        if (eliminado != null && !"AMBOS".equalsIgnoreCase(eliminado)) {
+            sql.append(" AND d.eliminado = ? ");
+            params.add("SI".equalsIgnoreCase(eliminado) ? 1 : 0);
+        }
+
+        sql.append(" ORDER BY d.fecha_alta DESC");
+
+
+        return jdbcTemplate.queryForList(sql.toString(), params.toArray());
+    }
+
+}
